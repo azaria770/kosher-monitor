@@ -1,0 +1,21 @@
+name: Daily Kosher Check
+on:
+  schedule:
+    - cron: '30 18 * * 0-4' # ירוץ ב-20:30 שעון ישראל, ימים א-ה
+  workflow_dispatch: # מאפשר לך להריץ ידנית לניסיון
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run script
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+        run: python monitor.py
