@@ -1,38 +1,38 @@
 import os
 import requests
 import pandas as pd
-import io
+import time
 
 def get_top_kosher_fund():
-    csv_url = "https://data.gov.il/dataset/e6fce050-705d-4f05-9502-0e23805494d9/resource/633db711-a3f3-469c-a6fd-059e09d82998/download/funds.csv"
+    # שימוש ב-API במקום הורדת קובץ ישירה לעקיפת חסימת ה-JS
+    url = "https://data.gov.il/api/3/action/datastore_search"
+    resource_id = "633db711-a3f3-469c-a6fd-059e09d82998"
     
-    # הגדרת "זהות" של דפדפן רגיל כדי לעקוף חסימות
+    params = {
+        'resource_id': resource_id,
+        'limit': 2000,
+        '_': int(time.time()) # פרמטר למניעת מטמון (Cache busting)
+    }
+    
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
     
     try:
-        # הורדת התוכן עם הזהות המזויפת
-        response = requests.get(csv_url, headers=headers)
-        response.raise_for_status()
+        response = requests.get(url, params=params, headers=headers, timeout=30)
+        data = response.json()
         
-        # קריאת התוכן כקובץ CSV
-        df = pd.read_csv(io.StringIO(response.text))
+        if 'result' not in data:
+            print("API response error:", data)
+            return None
+            
+        records = data['result']['records']
+        df = pd.DataFrame(records)
         
-        # איתור עמודות (גמיש לשמות בעברית ובאנגלית)
-        def find_col(keywords):
-            for col in df.columns:
-                if any(k.upper() in str(col).upper() for k in keywords):
-                    return col
-            return None
-
-        col_name = find_col(['NAME', 'שם', 'כינוי'])
-        col_yield = find_col(['YIELD_DAILY', 'תשואה', 'יומית'])
-        col_fee = find_col(['FEE', 'ניהול', 'שכ"נ'])
-
-        if not col_name or not col_yield or not col_fee:
-            print("Could not find columns. Columns present:", df.columns.tolist())
-            return None
+        # איתור עמודות חכם
+        col_name = next((c for c in df.columns if 'NAME' in c.upper() or 'שם' in c), None)
+        col_yield = next((c for c in df.columns if 'YIELD_DAILY' in c.upper() or 'תשואה' in c), None)
+        col_fee = next((c for c in df.columns if 'MANAGEMENT_FEE' in c.upper() or 'ניהול' in c or 'שכ"נ' in c), None)
 
         # סינון קרנות כספיות כשרות
         kosher_df = df[
@@ -41,10 +41,10 @@ def get_top_kosher_fund():
         ].copy()
 
         if kosher_df.empty:
-            print("No funds matched the filter.")
+            print("No funds matched filters.")
             return None
 
-        # המרה למספרים וחישוב נטו
+        # ניקוי נתונים וחישוב נטו
         kosher_df[col_yield] = pd.to_numeric(kosher_df[col_yield], errors='coerce').fillna(0)
         kosher_df[col_fee] = pd.to_numeric(kosher_df[col_fee], errors='coerce').fillna(0)
         kosher_df['NET_PROFIT'] = kosher_df[col_yield] - (kosher_df[col_fee] / 365)
@@ -58,7 +58,7 @@ def get_top_kosher_fund():
         }
 
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Final check error: {e}")
         return None
 
 def send_to_telegram(winner):
