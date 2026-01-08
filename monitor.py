@@ -3,56 +3,57 @@ import requests
 import pandas as pd
 
 def get_top_kosher_fund():
-    # זהו ה-ID המעודכן ביותר למאגר קרנות נאמנות - מחירים (נכון ל-2026)
-    resource_id = "8555776d-068d-4861-bcc5-c266a8779951"
-    url = f"https://data.gov.il/api/3/action/datastore_search?resource_id={resource_id}&limit=5000"
+    # המזהה הקבוע של חבילת הנתונים (Dataset)
+    package_id = "fund-data"
+    package_url = f"https://data.gov.il/api/3/action/package_show?id={package_id}"
     
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
     
     try:
-        print("Connecting to Government API...")
-        response = requests.get(url, headers=headers, timeout=30)
-        data = response.json()
+        print("Finding the latest resource ID...")
+        package_response = requests.get(package_url, headers=headers, timeout=30)
+        package_data = package_response.json()
         
-        if not data.get('success'):
-            print(f"API Error: {data.get('error')}")
-            return None
-            
-        records = data['result']['records']
-        if not records:
-            print("No records found in API response.")
-            return None
-            
-        df = pd.DataFrame(records)
-        print(f"Loaded {len(df)} funds from API.")
+        # חיפוש המשאב של "מחירי קרנות" בתוך החבילה
+        resources = package_data['result']['resources']
+        # אנחנו מחפשים את המשאב שהשם שלו מכיל "מחירים" או "מחירי"
+        resource = next((r for r in resources if "מחירים" in r['name']), resources[0])
+        resource_id = resource['id']
+        print(f"Using latest Resource ID: {resource_id}")
 
-        # איתור עמודות חכם
+        # עכשיו שולפים את הנתונים עם ה-ID שמצאנו הרגע
+        data_url = f"https://data.gov.il/api/3/action/datastore_search?resource_id={resource_id}&limit=5000"
+        data_response = requests.get(data_url, headers=headers, timeout=30)
+        data = data_response.json()
+        
+        records = data['result']['records']
+        df = pd.DataFrame(records)
+        print(f"Loaded {len(df)} records.")
+
+        # איתור עמודות (גמיש לשמות שונים)
         col_name = next((c for c in df.columns if 'NAME' in str(c).upper() or 'שם' in str(c)), None)
         col_yield = next((c for c in df.columns if 'YIELD' in str(c).upper() or 'תשואה' in str(c)), None)
         col_fee = next((c for c in df.columns if 'FEE' in str(c).upper() or 'ניהול' in str(c)), None)
 
-        # סינון: רק כספיות ורק כשרות
-        # המרה לטקסט לפני השימוש ב-str כדי למנוע את השגיאה מהצילום שלך
+        # המרה לטקסט וסינון
         df[col_name] = df[col_name].astype(str)
-        
         mask = (df[col_name].str.contains('כספית', na=False)) & \
                (df[col_name].str.contains('כשר', na=False))
         
         kosher_df = df[mask].copy()
-        print(f"Found {len(kosher_df)} kosher funds.")
-
+        
         if kosher_df.empty:
+            print("No funds found with current filters.")
             return None
 
-        # חישוב נטו
+        # המרה למספרים וחישוב נטו
         kosher_df[col_yield] = pd.to_numeric(kosher_df[col_yield], errors='coerce').fillna(0)
         kosher_df[col_fee] = pd.to_numeric(kosher_df[col_fee], errors='coerce').fillna(0)
         kosher_df['NET'] = kosher_df[col_yield] - (kosher_df[col_fee] / 365)
 
         winner = kosher_df.sort_values(by='NET', ascending=False).iloc[0]
-        
         return {
             'NAME': winner[col_name],
             'NET': winner['NET'],
@@ -60,7 +61,7 @@ def get_top_kosher_fund():
         }
 
     except Exception as e:
-        print(f"Final Debug Error: {e}")
+        print(f"Process Error: {e}")
         return None
 
 def send_to_telegram(winner):
@@ -77,7 +78,7 @@ def send_to_telegram(winner):
         requests.post(url, json={"chat_id": chat_id, "text": msg, "parse_mode": "Markdown"})
 
 if __name__ == "__main__":
-    result = get_top_kosher_fund()
-    if result:
-        send_to_telegram(result)
-        print("Success! Update sent to Telegram.")
+    top_fund = get_top_kosher_fund()
+    if top_fund:
+        send_to_telegram(top_fund)
+        print("Success! Notification sent.")
