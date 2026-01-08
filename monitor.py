@@ -1,63 +1,68 @@
 import os
-import requests
+import cloudscraper
 import pandas as pd
 import io
 
 def get_top_kosher_fund():
-    # כתובת ההורדה הישירה (שראינו שעובדת ועוקפת את החסימות)
+    # כתובת ההורדה הישירה
     url = "https://data.gov.il/datastore/dump/e6fce050-705d-4f05-9502-0e23805494d9"
     
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    }
-    
     try:
-        print("מוריד את קובץ הנתונים הגולמי...")
-        response = requests.get(url, headers=headers, timeout=60)
-        response.raise_for_status()
+        print("מפעיל עוקף-חסימות (CloudScraper)...")
+        # יצירת סקרייפר שמחקה דפדפן כרום רגיל
+        scraper = cloudscraper.create_scraper()
         
-        # --- תיקון הקסם לעברית ---
-        # מנסים לקרוא כ-UTF-8, אם נכשל מנסים Windows-1255 (הנפוץ בממשלה)
+        # ביצוע הבקשה דרך הסקרייפר
+        response = scraper.get(url)
+        
+        # בדיקה אם עדיין קיבלנו חסימה (אם התוכן מכיל HTML במקום CSV)
+        if "<html>" in response.text[:100]:
+            print("החסימה עדיין פעילה. השרת שלח דף HTML.")
+            # הדפסת חלק מהתוכן לדיבוג
+            print(f"תוכן שהתקבל: {response.text[:200]}")
+            return None
+
+        print("הקובץ ירד בהצלחה. מפענח...")
+        
+        # ניסיון פענוח עם קידודים שונים לעברית
         try:
             content = response.content.decode('utf-8-sig')
-        except UnicodeDecodeError:
+        except:
             content = response.content.decode('cp1255')
             
         df = pd.read_csv(io.StringIO(content))
         
-        # ניקוי שמות עמודות (מסיר רווחים מיותרים)
+        # ניקוי רווחים בשמות העמודות
         df.columns = df.columns.str.strip()
         
-        # הדפסת שמות העמודות ללוג כדי שנוכל לראות אם זה הצליח
-        print(f"עמודות שנמצאו: {list(df.columns)}")
-
-        # איתור עמודות גמיש
+        # זיהוי עמודות חכם
         col_name = next((c for c in df.columns if any(k in c for k in ['שם', 'NAME', 'קרן'])), None)
         col_yield = next((c for c in df.columns if any(k in c for k in ['תשואה', 'YIELD', 'יומית'])), None)
         col_fee = next((c for c in df.columns if any(k in c for k in ['ניהול', 'FEE', 'שכ"נ'])), None)
 
         if not col_name:
-            print("שגיאה: לא נמצאה עמודת שם קרן.")
+            print(f"לא נמצאו עמודות מתאימות. עמודות קיימות: {list(df.columns)}")
             return None
 
         # המרה לטקסט וסינון
         df[col_name] = df[col_name].astype(str)
         
-        # סינון רחב: מחפש "כספית" וגם ("כשר" או "מהדרין")
+        # סינון: חייב להכיל 'כספית' וגם ('כשר' או 'מהדרין')
         kosher_df = df[
             (df[col_name].str.contains('כספית', na=False)) & 
             (df[col_name].str.contains('כשר|מהדרין', na=False))
         ].copy()
 
-        print(f"נמצאו {len(kosher_df)} קרנות כספיות כשרות.")
+        print(f"נמצאו {len(kosher_df)} קרנות כשרות.")
 
         if kosher_df.empty:
             return None
 
-        # המרה למספרים וחישוב נטו
+        # המרה למספרים
         kosher_df[col_yield] = pd.to_numeric(kosher_df[col_yield], errors='coerce').fillna(0)
         kosher_df[col_fee] = pd.to_numeric(kosher_df[col_fee], errors='coerce').fillna(0)
         
+        # חישוב נטו
         kosher_df['NET'] = kosher_df[col_yield] - (kosher_df[col_fee] / 365)
 
         winner = kosher_df.sort_values(by='NET', ascending=False).iloc[0]
@@ -69,7 +74,7 @@ def get_top_kosher_fund():
         }
 
     except Exception as e:
-        print(f"שגיאה בתהליך: {e}")
+        print(f"שגיאה קריטית: {e}")
         return None
 
 def send_to_telegram(winner):
@@ -83,7 +88,9 @@ def send_to_telegram(winner):
             f"📉 דמי ניהול שנתיים: `{winner['FEE']}%`"
         )
         url = f"https://api.telegram.org/bot{token}/sendMessage"
-        requests.post(url, json={"chat_id": chat_id, "text": msg, "parse_mode": "Markdown"})
+        # שימוש ב-cloudscraper גם לשליחה לטלגרם ליתר ביטחון, למרות ששם requests עובד
+        scraper = cloudscraper.create_scraper()
+        scraper.post(url, json={"chat_id": chat_id, "text": msg, "parse_mode": "Markdown"})
 
 if __name__ == "__main__":
     result = get_top_kosher_fund()
