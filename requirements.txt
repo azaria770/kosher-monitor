@@ -1,2 +1,4 @@
 pandas
-curl_cffi
+selenium
+webdriver-manager
+requests
