@@ -1,64 +1,66 @@
 import os
 import requests
 import pandas as pd
-import io
 
 def get_top_kosher_fund():
-    # המזהה הקבוע של המאגר (Dataset ID) - עוקף את שינויי ה-Resource ID
-    dataset_id = "e6fce050-705d-4f05-9502-0e23805494d9"
-    # קישור להורדה ישירה של ה-CSV המעודכן ביותר במאגר
-    url = f"https://data.gov.il/datastore/dump/{dataset_id}?bom=true"
+    # זהו ה-ID המעודכן ביותר למאגר קרנות נאמנות - מחירים (נכון ל-2026)
+    resource_id = "8555776d-068d-4861-bcc5-c266a8779951"
+    url = f"https://data.gov.il/api/3/action/datastore_search?resource_id={resource_id}&limit=5000"
     
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
     
     try:
-        print("Starting data download...")
-        response = requests.get(url, headers=headers, timeout=45)
-        response.raise_for_status()
+        print("Connecting to Government API...")
+        response = requests.get(url, headers=headers, timeout=30)
+        data = response.json()
         
-        # קריאת ה-CSV תוך טיפול בקידוד עברית
-        df = pd.read_csv(io.StringIO(response.text))
-        print(f"Successfully downloaded {len(df)} records.")
-
-        # איתור עמודות דינמי (למקרה שהשמות משתנים מעברית לאנגלית)
-        def find_col(keys):
-            for c in df.columns:
-                if any(k.upper() in str(c).upper() for k in keys): return c
+        if not data.get('success'):
+            print(f"API Error: {data.get('error')}")
             return None
+            
+        records = data['result']['records']
+        if not records:
+            print("No records found in API response.")
+            return None
+            
+        df = pd.DataFrame(records)
+        print(f"Loaded {len(df)} funds from API.")
 
-        col_name = find_col(['FUND_NAME', 'NAME', 'שם'])
-        col_yield = find_col(['YIELD_DAILY', 'תשואה', 'יומית'])
-        col_fee = find_col(['MANAGEMENT_FEE', 'FEE', 'ניהול', 'שכ"נ'])
+        # איתור עמודות חכם
+        col_name = next((c for c in df.columns if 'NAME' in str(c).upper() or 'שם' in str(c)), None)
+        col_yield = next((c for c in df.columns if 'YIELD' in str(c).upper() or 'תשואה' in str(c)), None)
+        col_fee = next((c for c in df.columns if 'FEE' in str(c).upper() or 'ניהול' in str(c)), None)
 
-        # סינון קרנות כספיות כשרות
+        # סינון: רק כספיות ורק כשרות
+        # המרה לטקסט לפני השימוש ב-str כדי למנוע את השגיאה מהצילום שלך
+        df[col_name] = df[col_name].astype(str)
+        
         mask = (df[col_name].str.contains('כספית', na=False)) & \
                (df[col_name].str.contains('כשר', na=False))
         
         kosher_df = df[mask].copy()
-        print(f"Found {len(kosher_df)} kosher money funds.")
+        print(f"Found {len(kosher_df)} kosher funds.")
 
         if kosher_df.empty:
             return None
 
-        # המרת נתונים למספרים וחישוב נטו
+        # חישוב נטו
         kosher_df[col_yield] = pd.to_numeric(kosher_df[col_yield], errors='coerce').fillna(0)
         kosher_df[col_fee] = pd.to_numeric(kosher_df[col_fee], errors='coerce').fillna(0)
-        
-        # חישוב: תשואה יומית פחות דמי ניהול יחסיים ליום
-        kosher_df['NET_PROFIT'] = kosher_df[col_yield] - (kosher_df[col_fee] / 365)
+        kosher_df['NET'] = kosher_df[col_yield] - (kosher_df[col_fee] / 365)
 
-        winner = kosher_df.sort_values(by='NET_PROFIT', ascending=False).iloc[0]
+        winner = kosher_df.sort_values(by='NET', ascending=False).iloc[0]
         
         return {
             'NAME': winner[col_name],
-            'NET_PROFIT': winner['NET_PROFIT'],
-            'MANAGEMENT_FEE': winner[col_fee]
+            'NET': winner['NET'],
+            'FEE': winner[col_fee]
         }
 
     except Exception as e:
-        print(f"Detailed Error: {e}")
+        print(f"Final Debug Error: {e}")
         return None
 
 def send_to_telegram(winner):
@@ -68,8 +70,8 @@ def send_to_telegram(winner):
         msg = (
             f"🏆 *הקרן הכספית הכשרה המנצחת להיום:*\n\n"
             f"📌 שם: *{winner['NAME']}*\n"
-            f"💰 רווח נטו יומי: `{winner['NET_PROFIT']:.4f}%` \n"
-            f"📉 דמי ניהול שנתיים: `{winner['MANAGEMENT_FEE']}%` \n"
+            f"💰 רווח נטו יומי: `{winner['NET']:.4f}%` \n"
+            f"📉 דמי ניהול שנתיים: `{winner['FEE']}%` \n"
         )
         url = f"https://api.telegram.org/bot{token}/sendMessage"
         requests.post(url, json={"chat_id": chat_id, "text": msg, "parse_mode": "Markdown"})
@@ -78,6 +80,4 @@ if __name__ == "__main__":
     result = get_top_kosher_fund()
     if result:
         send_to_telegram(result)
-        print("Success! Update sent.")
-    else:
-        print("No data processed.")
+        print("Success! Update sent to Telegram.")
