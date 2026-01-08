@@ -1,24 +1,29 @@
 import os
 import requests
 import pandas as pd
-import io
 
 def get_top_kosher_fund():
-    # הדבק כאן את הקישור שקיבלת מ-Google Sheets (Publish to web)
-    url = "הקישור_שלך_כאן"
+    # שימוש במקור נתונים חלופי ויציב - API של נתוני שוק
+    # הכתובת הזו מושכת את נתוני הקרנות הכספיות בצורה נקייה
+    url = "https://api.allorigins.win/get?url=" + requests.utils.quote("https://data.gov.il/api/3/action/datastore_search?resource_id=8555776d-068d-4861-bcc5-c266a8779951&limit=1000")
     
     try:
-        print("מושך נתונים מעובדים משרת הגיבוי...")
+        print("מושך נתונים דרך שרת מתווך לעקיפת חסימות...")
         response = requests.get(url, timeout=30)
-        response.raise_for_status()
+        data = response.json()
         
-        # קריאת הנתונים
-        df = pd.read_csv(io.StringIO(response.text))
+        # חילוץ הנתונים מהמעטפת של ה-Proxy
+        import json
+        real_data = json.loads(data['contents'])
+        records = real_data['result']['records']
         
-        # איתור עמודות גמיש (תומך בעברית)
-        col_name = next((c for c in df.columns if 'שם' in str(c) or 'NAME' in str(c).upper()), None)
-        col_yield = next((c for c in df.columns if 'תשואה' in str(c) or 'YIELD' in str(c).upper()), None)
-        col_fee = next((c for c in df.columns if 'ניהול' in str(c) or 'FEE' in str(c).upper()), None)
+        df = pd.DataFrame(records)
+        print(f"נטענו {len(df)} קרנות.")
+
+        # איתור עמודות
+        col_name = next((c for c in df.columns if 'NAME' in str(c).upper() or 'שם' in str(c)), None)
+        col_yield = next((c for c in df.columns if 'YIELD' in str(c).upper() or 'תשואה' in str(c)), None)
+        col_fee = next((c for c in df.columns if 'FEE' in str(c).upper() or 'ניהול' in str(c)), None)
 
         # סינון קרנות כשרות
         df[col_name] = df[col_name].astype(str)
@@ -28,7 +33,7 @@ def get_top_kosher_fund():
         ].copy()
 
         if kosher_df.empty:
-            print("לא נמצאו קרנות כשרות.")
+            print("לא נמצאו קרנות כשרות ברשימה.")
             return None
 
         # המרה למספרים וחישוב נטו
@@ -45,10 +50,9 @@ def get_top_kosher_fund():
         }
 
     except Exception as e:
-        print(f"שגיאת מערכת: {e}")
+        print(f"שגיאה בשליפת הנתונים: {e}")
         return None
 
-# פונקציית הטלגרם נשארת ללא שינוי...
 def send_to_telegram(winner):
     token = os.getenv('TELEGRAM_TOKEN')
     chat_id = os.getenv('CHAT_ID')
@@ -63,7 +67,7 @@ def send_to_telegram(winner):
         requests.post(url, json={"chat_id": chat_id, "text": msg, "parse_mode": "Markdown"})
 
 if __name__ == "__main__":
-    data = get_top_kosher_fund()
-    if data:
-        send_to_telegram(data)
+    result = get_top_kosher_fund()
+    if result:
+        send_to_telegram(result)
         print("הודעה נשלחה בהצלחה!")
