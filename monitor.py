@@ -4,8 +4,8 @@ import pandas as pd
 import time
 
 def get_top_kosher_fund():
-    # ה-ID המעודכן ביותר למאגר קרנות נאמנות - מחירים
-    resource_id = "633db711-a3f3-469c-a6fd-059e09d82998"
+    # ה-ID החדש והמעודכן ביותר של מאגר קרנות נאמנות - מחירים
+    resource_id = "8555776d-068d-4861-bcc5-c266a8779951"
     url = f"https://data.gov.il/api/3/action/datastore_search?resource_id={resource_id}&limit=5000"
     
     headers = {
@@ -13,39 +13,38 @@ def get_top_kosher_fund():
     }
     
     try:
-        # שימוש ב-Session לעקיפת חסימות
-        session = requests.Session()
-        response = session.get(url, headers=headers, timeout=30)
+        # פנייה ל-API עם מזהה המשאב החדש
+        response = requests.get(url, headers=headers, timeout=30)
         data = response.json()
         
         if not data.get('success'):
-            print(f"API Error: {data.get('error')}")
+            print(f"API Error with new ID: {data.get('error')}")
             return None
             
         records = data['result']['records']
         df = pd.DataFrame(records)
         
-        # איתור עמודות (תומך בעברית ואנגלית)
-        col_name = next((c for c in df.columns if 'NAME' in str(c).upper() or 'שם' in str(c)), None)
-        col_yield = next((c for c in df.columns if 'YIELD_DAILY' in str(c).upper() or 'תשואה' in str(c)), None)
-        col_fee = next((c for c in df.columns if 'FEE' in str(c).upper() or 'ניהול' in str(c)), None)
+        # איתור עמודות (גמיש לשמות שונים)
+        col_name = next((c for c in df.columns if 'FUND_NAME' in str(c).upper() or 'שם' in str(c)), None)
+        col_yield = next((c for c in df.columns if 'YIELD' in str(c).upper() or 'תשואה' in str(c)), None)
+        col_fee = next((c for c in df.columns if 'FEE' in str(c).upper() or 'ניהול' in str(c) or 'שכ"נ' in str(c)), None)
 
         # סינון קרנות כספיות כשרות
-        # משתמשים ב-str.contains כדי למצוא גם "כשרה", "כשר", "למהדרין" וכו'
+        # הוספתי הגנה למקרה שהעמודה ריקה
         mask = (df[col_name].str.contains('כספית', na=False)) & \
                (df[col_name].str.contains('כשר', na=False))
         
         kosher_df = df[mask].copy()
 
         if kosher_df.empty:
-            print("No kosher money funds found in the current records.")
+            print("Filtering logic: No funds matched 'כספית' and 'כשר'.")
             return None
 
-        # המרה למספרים וחישוב נטו
+        # המרה למספרים וחישוב
         kosher_df[col_yield] = pd.to_numeric(kosher_df[col_yield], errors='coerce').fillna(0)
         kosher_df[col_fee] = pd.to_numeric(kosher_df[col_fee], errors='coerce').fillna(0)
         
-        # חישוב תשואה נטו (יומית פחות דמי ניהול יחסיים ליום)
+        # חישוב תשואה נטו
         kosher_df['NET_PROFIT'] = kosher_df[col_yield] - (kosher_df[col_fee] / 365)
 
         # מציאת המנצחת
@@ -58,7 +57,7 @@ def get_top_kosher_fund():
         }
 
     except Exception as e:
-        print(f"Unexpected error: {e}")
+        print(f"Connection/Processing error: {e}")
         return None
 
 def send_to_telegram(winner):
@@ -78,5 +77,6 @@ if __name__ == "__main__":
     winner_data = get_top_kosher_fund()
     if winner_data:
         send_to_telegram(winner_data)
+        print("Success! Message sent to Telegram.")
     else:
-        print("Final attempt: No data sent to Telegram.")
+        print("Process ended without data.")
