@@ -3,42 +3,46 @@ import requests
 import pandas as pd
 
 def get_top_kosher_fund():
-    # כתובת ה-API של מאגר נתוני קרנות נאמנות
-    url = "https://data.gov.il/api/3/action/datastore_search"
-    resource_id = "633db711-a3f3-469c-a6fd-059e09d82998"
-    
-    params = {
-        'resource_id': resource_id,
-        'limit': 2000 # מושך את כל הקרנות הקיימות
-    }
+    # כתובת להורדה ישירה של הקובץ - הרבה יותר יציב מול השרת הממשלתי
+    csv_url = "https://data.gov.il/dataset/e6fce050-705d-4f05-9502-0e23805494d9/resource/633db711-a3f3-469c-a6fd-059e09d82998/download/funds.csv"
     
     try:
-        response = requests.get(url, params=params)
-        data = response.json()
-        records = data['result']['records']
-        df = pd.DataFrame(records)
+        # הורדת הנתונים כקובץ CSV
+        df = pd.read_csv(csv_url)
 
         # 1. סינון: רק כספיות ורק כשרות
-        # במאגר הממשלתי 'NAME' הוא שם הקרן
+        # ב-CSV הממשלתי השמות הם בעברית לפעמים, אז נחפש בשם הקרן
+        # העמודה בדרך כלל נקראת 'שם קרן' או 'NAME'
+        column_name = 'NAME' if 'NAME' in df.columns else df.columns[1] 
+        
         kosher_df = df[
-            (df['NAME'].str.contains('כספית', na=False)) & 
-            (df['NAME'].str.contains('כשרה|כשר', na=False))
+            (df[column_name].str.contains('כספית', na=False)) & 
+            (df[column_name].str.contains('כשרה|כשר', na=False))
         ].copy()
 
-        # 2. ניקוי נתונים - המרה למספרים
-        # 'YIELD_DAILY' - תשואה יומית, 'MANAGEMENT_FEE' - דמי ניהול שנתיים
-        kosher_df['YIELD_DAILY'] = pd.to_numeric(kosher_df['YIELD_DAILY'], errors='coerce').fillna(0)
-        kosher_df['MANAGEMENT_FEE'] = pd.to_numeric(kosher_df['MANAGEMENT_FEE'], errors='coerce').fillna(0)
+        # 2. ניקוי נתונים
+        yield_col = 'YIELD_DAILY' if 'YIELD_DAILY' in df.columns else 'תשואה יומית'
+        fee_col = 'MANAGEMENT_FEE' if 'MANAGEMENT_FEE' in df.columns else 'דמי ניהול'
+        
+        kosher_df[yield_col] = pd.to_numeric(kosher_df[yield_col], errors='coerce').fillna(0)
+        kosher_df[fee_col] = pd.to_numeric(kosher_df[fee_col], errors='coerce').fillna(0)
 
-        # 3. חישוב נטו יומית (תשואה יומית פחות דמי ניהול יחסיים ליום)
-        kosher_df['NET_PROFIT'] = kosher_df['YIELD_DAILY'] - (kosher_df['MANAGEMENT_FEE'] / 365)
+        # 3. חישוב נטו
+        kosher_df['NET_PROFIT'] = kosher_df[yield_col] - (kosher_df[fee_col] / 365)
 
-        # 4. מציאת הקרן המובילה
+        # 4. מציאת המנצחת
         winner = kosher_df.sort_values(by='NET_PROFIT', ascending=False).iloc[0]
         
-        return winner
+        # התאמת שמות למסך הטלגרם
+        result = {
+            'NAME': winner[column_name],
+            'NET_PROFIT': winner['NET_PROFIT'],
+            'MANAGEMENT_FEE': winner[fee_col],
+            'DATE': 'היום'
+        }
+        return result
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Error logic: {e}")
         return None
 
 def send_to_telegram(winner):
