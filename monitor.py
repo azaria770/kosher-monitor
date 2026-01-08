@@ -1,64 +1,67 @@
 import os
 import requests
 import pandas as pd
-from io import StringIO
+import io
 
 def get_top_kosher_fund():
-    # מקור מידע חלופי ויציב - דף הקרנות הכספיות
-    url = "https://www.bizportal.co.il/money-market-funds"
+    # כתובת הורדה ישירה של הקובץ הגולמי - המקור הכי פחות ניתן לחסימה
+    url = "https://data.gov.il/datastore/dump/e6fce050-705d-4f05-9502-0e23805494d9?bom=true"
     
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
     
     try:
-        print("מתחבר למקור נתונים כלכלי חלופי...")
-        response = requests.get(url, headers=headers, timeout=30)
+        print("מבצע הורדה ישירה של המאגר...")
+        # הורדת הקובץ
+        response = requests.get(url, headers=headers, timeout=45)
+        response.raise_for_status()
         
-        # קריאת הטבלאות מהדף
-        tables = pd.read_html(StringIO(response.text))
-        
-        # מציאת הטבלה עם הכי הרבה שורות (זו טבלת הנתונים)
-        df = max(tables, key=len)
+        # קריאת הנתונים תוך התעלמות משורות פגומות
+        df = pd.read_csv(io.StringIO(response.text), on_bad_lines='skip')
         
         # ניקוי שמות עמודות
-        df.columns = [str(c).strip() for c in df.columns]
+        df.columns = df.columns.str.strip()
         
-        # איתור עמודות קריטיות
-        col_name = next((c for c in df.columns if 'שם' in c), df.columns[0])
-        col_yield = next((c for c in df.columns if 'תשואה' in c and 'שנה' not in c), None)
-        col_fee = next((c for c in df.columns if 'ניהול' in c), None)
+        # איתור עמודות קריטיות (עברית/אנגלית)
+        col_name = next((c for c in df.columns if any(k in c.upper() for k in ['NAME', 'שם', 'כינוי'])), None)
+        col_yield = next((c for c in df.columns if any(k in c.upper() for k in ['YIELD_DAILY', 'תשואה'])), None)
+        col_fee = next((c for c in df.columns if any(k in c.upper() for k in ['MANAGEMENT_FEE', 'ניהול', 'שכ"נ'])), None)
 
-        # סינון קרנות כשרות
-        df[col_name] = df[col_name].astype(str)
-        kosher_df = df[df[col_name].str.contains('כשרה|כשר|מהדרין', na=False)].copy()
-        
-        if kosher_df.empty:
-            print("לא נמצאו קרנות כשרות בטבלה זו.")
+        if not all([col_name, col_yield, col_fee]):
+            print(f"שגיאה: לא נמצאו כל העמודות הדרושות. נמצאו: {df.columns.tolist()}")
             return None
 
-        # ניקוי מספרים (אחוזים וסימנים)
-        def clean_num(val):
-            if pd.isna(val): return 0
-            s = str(val).replace('%', '').replace('+', '').replace(' ', '').strip()
-            try: return float(s)
-            except: return 0
+        # המרה לטקסט וסינון קרנות כשרות
+        df[col_name] = df[col_name].astype(str)
+        # סינון: חייב להכיל 'כספ' וגם 'כשר' או 'מהדרין'
+        kosher_df = df[
+            (df[col_name].str.contains('כספ', na=False)) & 
+            (df[col_name].str.contains('כשר|מהדרין', na=False))
+        ].copy()
 
-        # חישוב נטו (בהנחה שהתשואה היא שנתית מצטברת או יומית)
-        kosher_df['yield_val'] = kosher_df[col_yield].apply(clean_num)
-        kosher_df['fee_val'] = kosher_df[col_fee].apply(clean_num)
+        if kosher_df.empty:
+            print("לא נמצאו קרנות כשרות ברשימה שהורדה.")
+            return None
+
+        # ניקוי ערכים מספריים
+        kosher_df[col_yield] = pd.to_numeric(kosher_df[col_yield], errors='coerce').fillna(0)
+        kosher_df[col_fee] = pd.to_numeric(kosher_df[col_fee], errors='coerce').fillna(0)
         
-        # מיון לפי התשואה הכי גבוהה
-        winner = kosher_df.sort_values(by='yield_val', ascending=False).iloc[0]
+        # חישוב תשואה נטו
+        kosher_df['NET_PROFIT'] = kosher_df[col_yield] - (kosher_df[col_fee] / 365)
+
+        # מציאת המנצחת
+        winner = kosher_df.sort_values(by='NET_PROFIT', ascending=False).iloc[0]
         
         return {
             'NAME': winner[col_name],
-            'YIELD': winner['yield_val'],
-            'FEE': winner['fee_val']
+            'NET': winner['NET_PROFIT'],
+            'FEE': winner[col_fee]
         }
 
     except Exception as e:
-        print(f"שגיאת חילוץ סופית: {e}")
+        print(f"שגיאת שליפה סופית: {e}")
         return None
 
 def send_to_telegram(winner):
@@ -68,8 +71,8 @@ def send_to_telegram(winner):
         msg = (
             f"🏆 *הקרן הכספית הכשרה המנצחת להיום:*\n\n"
             f"📌 שם: *{winner['NAME']}*\n"
-            f"📈 תשואה: `{winner['YIELD']}%` \n"
-            f"📉 דמי ניהול: `{winner['FEE']}%`"
+            f"💰 רווח נטו יומי: `{winner['NET']:.4f}%` \n"
+            f"📉 דמי ניהול שנתיים: `{winner['FEE']}%`"
         )
         url = f"https://api.telegram.org/bot{token}/sendMessage"
         requests.post(url, json={"chat_id": chat_id, "text": msg, "parse_mode": "Markdown"})
