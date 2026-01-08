@@ -1,2 +1,5 @@
 pandas
-requests
+curl_cffi
+lxml
+beautifulsoup4
+html5lib
